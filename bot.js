@@ -27,7 +27,7 @@ const {
   WEBHOOK_SECRET
 } = process.env;
 
-if (!DISCORD_TOKEN || !WEBHOOK_URL || !WEBHOOK_SECRET) {
+if (!DISCORD_TOKEN || !WEBHOOK_URL) {
   console.error(
     "Missing required environment variables."
   );

@@ -306,11 +306,6 @@ client.on(Events.InteractionCreate, async interaction => {
           name: "Submitted By",
           value: `<@${interaction.user.id}>`,
           inline: true
-        },
-        {
-          name: "Status",
-          value: "Open",
-          inline: true
         }
       )
       .setFooter({
@@ -429,8 +424,7 @@ client.on(Events.InteractionCreate, async interaction => {
       feedback: {
         title: title,
         description: description,
-        email: email,
-        status: "open"
+        email: email
       },
 
       timestamp: new Date().toISOString()

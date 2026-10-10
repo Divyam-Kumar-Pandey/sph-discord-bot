@@ -1,22 +1,20 @@
 
 require("dotenv").config();
 
-const fs = require("node:fs");
-const path = require("node:path");
+const crypto = require("node:crypto");
 
 const {
   Client,
   GatewayIntentBits,
   Events,
   SlashCommandBuilder,
-  PermissionFlagsBits,
-  MessageFlags,
-  ChannelType,
   ModalBuilder,
   LabelBuilder,
   TextInputBuilder,
   TextInputStyle,
-  EmbedBuilder
+  EmbedBuilder,
+  MessageFlags,
+  PermissionFlagsBits
 } = require("discord.js");
 
 // ============================================
@@ -29,9 +27,9 @@ const {
   WEBHOOK_SECRET
 } = process.env;
 
-if (!DISCORD_TOKEN || !WEBHOOK_URL) {
+if (!DISCORD_TOKEN || !WEBHOOK_URL || !WEBHOOK_SECRET) {
   console.error(
-    "Missing DISCORD_TOKEN, WEBHOOK_URL"
+    "Missing required environment variables."
   );
   process.exit(1);
 }
@@ -40,133 +38,59 @@ if (!DISCORD_TOKEN || !WEBHOOK_URL) {
 // 2. INITIALIZE DISCORD BOT
 // ============================================
 
+// Only Guilds intent is required for slash
+// commands and modal interactions.
+
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
-  ]
+  intents: [GatewayIntentBits.Guilds]
 });
 
 // ============================================
-// 3. CHANNEL CONFIGURATION STORAGE
-// ============================================
-
-const dataDir = path.join(__dirname, "data");
-const dataFile = path.join(dataDir, "channels.json");
-
-fs.mkdirSync(dataDir, { recursive: true });
-
-let configurations = {};
-
-if (fs.existsSync(dataFile)) {
-  try {
-    configurations = JSON.parse(
-      fs.readFileSync(dataFile, "utf8")
-    );
-  } catch (error) {
-    console.error("Cannot load channel configuration:", error);
-    process.exit(1);
-  }
-}
-
-function saveConfigurations() {
-  const tempFile = dataFile + ".tmp";
-
-  fs.writeFileSync(
-    tempFile,
-    JSON.stringify(configurations, null, 2)
-  );
-
-  fs.renameSync(tempFile, dataFile);
-}
-
-function isMonitored(guildId, channelId) {
-  return (configurations[guildId] || [])
-    .includes(channelId);
-}
-
-// ============================================
-// 4. CREATE SLASH COMMANDS
+// 3. REGISTER /feedback new COMMAND
 // ============================================
 
 const feedbackCommand = new SlashCommandBuilder()
   .setName("feedback")
-  .setDescription("Submit feedback and manage collection")
-
-  // USER: /feedback new
+  .setDescription("Submit product feedback")
   .addSubcommand(sub =>
     sub
       .setName("new")
-      .setDescription("Submit feedback or report an issue")
-  )
-
-  // ADMIN: /feedback add
-  .addSubcommand(sub =>
-    sub
-      .setName("add")
-      .setDescription("Enable feedback collection")
-      .addChannelOption(option =>
-        option
-          .setName("channel")
-          .setDescription("Channel to monitor")
-          .addChannelTypes(
-            ChannelType.GuildText,
-            ChannelType.GuildAnnouncement
-          )
-          .setRequired(true)
-      )
-  )
-
-  // ADMIN: /feedback remove
-  .addSubcommand(sub =>
-    sub
-      .setName("remove")
-      .setDescription("Disable feedback collection")
-      .addChannelOption(option =>
-        option
-          .setName("channel")
-          .setDescription("Channel to remove")
-          .addChannelTypes(
-            ChannelType.GuildText,
-            ChannelType.GuildAnnouncement
-          )
-          .setRequired(true)
-      )
-  )
-
-  // ADMIN: /feedback list
-  .addSubcommand(sub =>
-    sub
-      .setName("list")
-      .setDescription("Show monitored channels")
+      .setDescription("Report an issue or suggest a feature")
   );
 
 // ============================================
-// 5. DISCORD BOT READY
+// 4. BOT READY
 // ============================================
 
 client.once(Events.ClientReady, async readyClient => {
-  console.log(`Bot connected: ${readyClient.user.tag}`);
+
+  console.log(
+    `Bot connected as ${readyClient.user.tag}`
+  );
 
   try {
     await readyClient.application.commands.set([
       feedbackCommand.toJSON()
     ]);
 
-    console.log("Slash commands registered successfully");
+    console.log("Slash command registered: /feedback new");
+
   } catch (error) {
-    console.error("Command registration failed:", error);
+    console.error(
+      "Failed to register slash command:",
+      error
+    );
   }
 });
 
 // ============================================
-// 6. WEBHOOK FORWARDING FUNCTION
+// 5. WEBHOOK FORWARDING
 // ============================================
 
 async function forwardToWebhook(payload) {
 
   for (let attempt = 1; attempt <= 3; attempt++) {
+
     try {
       const response = await fetch(WEBHOOK_URL, {
         method: "POST",
@@ -188,11 +112,10 @@ async function forwardToWebhook(payload) {
       }
 
       console.log(
-        `[WEBHOOK] Delivered: ${payload.event_type}`,
-        payload.message_id
+        `[WEBHOOK] Feedback delivered: ${payload.feedback_id}`
       );
 
-      return true;
+      return;
 
     } catch (error) {
 
@@ -201,23 +124,24 @@ async function forwardToWebhook(payload) {
         error.message
       );
 
-      if (attempt < 3) {
-        await new Promise(resolve =>
-          setTimeout(resolve, attempt * 1000)
-        );
+      if (attempt === 3) {
+        throw error;
       }
+
+      await new Promise(resolve =>
+        setTimeout(resolve, attempt * 1000)
+      );
     }
   }
-
-  throw new Error("Webhook delivery failed after 3 attempts");
 }
 
 // ============================================
-// 7. BUILD FEEDBACK FORM
+// 6. CREATE FEEDBACK MODAL
 // ============================================
 
-function createFeedbackModal(guildId, channelId) {
+function createFeedbackModal() {
 
+  // Issue title
   const titleInput = new TextInputBuilder()
     .setCustomId("feedback_title")
     .setStyle(TextInputStyle.Short)
@@ -226,6 +150,7 @@ function createFeedbackModal(guildId, channelId) {
     .setMaxLength(150)
     .setRequired(true);
 
+  // Issue description
   const descriptionInput = new TextInputBuilder()
     .setCustomId("feedback_description")
     .setStyle(TextInputStyle.Paragraph)
@@ -236,6 +161,7 @@ function createFeedbackModal(guildId, channelId) {
     .setMaxLength(2000)
     .setRequired(true);
 
+  // Contact email
   const emailInput = new TextInputBuilder()
     .setCustomId("feedback_email")
     .setStyle(TextInputStyle.Short)
@@ -243,10 +169,8 @@ function createFeedbackModal(guildId, channelId) {
     .setMaxLength(254)
     .setRequired(true);
 
-  return new ModalBuilder()
-    .setCustomId(
-      `feedback_modal:${guildId}:${channelId}`
-    )
+  const modal = new ModalBuilder()
+    .setCustomId("feedback_submission")
     .setTitle("Submit Feedback")
     .addLabelComponents(
 
@@ -261,15 +185,17 @@ function createFeedbackModal(guildId, channelId) {
       new LabelBuilder()
         .setLabel("Email Address")
         .setDescription(
-          "Used for issue updates; not shown publicly."
+          "For issue updates; never shown publicly."
         )
         .setTextInputComponent(emailInput)
 
     );
+
+  return modal;
 }
 
 // ============================================
-// 8. HANDLE DISCORD INTERACTIONS
+// 7. HANDLE SLASH COMMANDS AND MODALS
 // ============================================
 
 client.on(Events.InteractionCreate, async interaction => {
@@ -277,316 +203,265 @@ client.on(Events.InteractionCreate, async interaction => {
   try {
 
     // ----------------------------------------
-    // A. FEEDBACK FORM SUBMISSION
+    // A. HANDLE /feedback new
     // ----------------------------------------
 
     if (
-      interaction.isModalSubmit() &&
-      interaction.customId.startsWith("feedback_modal:")
+      interaction.isChatInputCommand() &&
+      interaction.commandName === "feedback" &&
+      interaction.options.getSubcommand() === "new"
     ) {
 
-      const parts = interaction.customId.split(":");
-
-      const originalGuildId = parts[1];
-      const originalChannelId = parts[2];
-
-      if (
-        !interaction.inGuild() ||
-        interaction.guildId !== originalGuildId ||
-        interaction.channelId !== originalChannelId ||
-        !isMonitored(
-          interaction.guildId,
-          interaction.channelId
-        )
-      ) {
+      if (!interaction.inGuild()) {
         return interaction.reply({
-          content: "Feedback is not enabled in this channel.",
+          content:
+            "Please use this command in a Discord server.",
           flags: MessageFlags.Ephemeral
         });
       }
 
-      // Collect submitted values
-      const title = interaction.fields
-        .getTextInputValue("feedback_title")
-        .trim();
-
-      const description = interaction.fields
-        .getTextInputValue("feedback_description")
-        .trim();
-
-      const email = interaction.fields
-        .getTextInputValue("feedback_email")
-        .trim()
-        .toLowerCase();
-
-      // Validate email format
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-      if (!emailRegex.test(email) || email.length > 254) {
-        return interaction.reply({
-          content: "Please enter a valid email address.",
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
-      // Acknowledge form submission
-      await interaction.deferReply({
-        flags: MessageFlags.Ephemeral
-      });
-
-      // --------------------------------------
-      // Create public feedback embed
-      // --------------------------------------
-
-      const embed = new EmbedBuilder()
-        .setTitle(`New Feedback: ${title}`)
-        .setDescription(description)
-        .setColor(0x5865F2)
-        .addFields(
-          {
-            name: "Submitted By",
-            value: `<@${interaction.user.id}>`,
-            inline: true
-          },
-          {
-            name: "Status",
-            value: "Open",
-            inline: true
-          }
-        )
-        .setFooter({
-          text: "Submitted using Feedback Collector"
-        })
-        .setTimestamp();
-
-      // IMPORTANT: Do not include email
-      // in the public Discord embed.
-
-      let postedMessage;
-
-      try {
-        postedMessage = await interaction.channel.send({
-          embeds: [embed],
-          allowedMentions: { parse: [] }
-        });
-      } catch (error) {
-        console.error("Failed to post feedback:", error);
-
-        return interaction.editReply({
-          content:
-            "Could not post feedback. " +
-            "Please contact the server administrator."
-        });
-      }
-
-      // --------------------------------------
-      // Prepare structured webhook payload
-      // --------------------------------------
-
-      const payload = {
-        platform: "discord",
-        event_type: "feedback.created",
-
-        guild_id: interaction.guildId,
-        guild_name: interaction.guild.name,
-
-        channel_id: interaction.channelId,
-        channel_name: interaction.channel.name,
-
-        message_id: postedMessage.id,
-
-        author: {
-          id: interaction.user.id,
-          username: interaction.user.username,
-          display_name: interaction.user.globalName
-        },
-
-        feedback: {
-          title: title,
-          description: description,
-          email: email,
-          status: "open"
-        },
-
-        timestamp: new Date().toISOString()
-      };
-
-      // --------------------------------------
-      // Forward to your backend
-      // --------------------------------------
-
-      try {
-
-        await forwardToWebhook(payload);
-
-        await interaction.editReply({
-          content:
-            "Your feedback was submitted successfully! " +
-            "You may receive email updates about this issue."
-        });
-
-      } catch (error) {
-
-        console.error(
-          "Feedback webhook delivery failed:",
-          error
-        );
-
-        await interaction.editReply({
-          content:
-            "Your feedback was posted in Discord, " +
-            "but syncing it to the feedback system failed. " +
-            "Please contact the server administrator."
-        });
-      }
-
-      return;
-    }
-
-    // ----------------------------------------
-    // B. HANDLE SLASH COMMANDS
-    // ----------------------------------------
-
-    if (!interaction.isChatInputCommand()) return;
-    if (interaction.commandName !== "feedback") return;
-    if (!interaction.inGuild()) return;
-
-    const action = interaction.options.getSubcommand();
-    const guildId = interaction.guildId;
-
-    // ----------------------------------------
-    // /feedback new
-    // ----------------------------------------
-
-    if (action === "new") {
-
-      if (!isMonitored(guildId, interaction.channelId)) {
-        return interaction.reply({
-          content:
-            "Feedback is not enabled in this channel. " +
-            "Please contact a server administrator.",
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
-      const modal = createFeedbackModal(
-        guildId,
-        interaction.channelId
+      // Open feedback form
+      await interaction.showModal(
+        createFeedbackModal()
       );
 
-      await interaction.showModal(modal);
       return;
     }
 
     // ----------------------------------------
-    // Admin permission check
+    // B. HANDLE FEEDBACK FORM SUBMISSION
     // ----------------------------------------
 
     if (
-      !interaction.memberPermissions?.has(
-        PermissionFlagsBits.ManageGuild
+      !interaction.isModalSubmit() ||
+      interaction.customId !== "feedback_submission"
+    ) {
+      return;
+    }
+
+    if (!interaction.inGuild() || !interaction.channel) {
+      return interaction.reply({
+        content:
+          "Feedback must be submitted in a server channel.",
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    // Collect form values
+    const title = interaction.fields
+      .getTextInputValue("feedback_title")
+      .trim();
+
+    const description = interaction.fields
+      .getTextInputValue("feedback_description")
+      .trim();
+
+    const email = interaction.fields
+      .getTextInputValue("feedback_email")
+      .trim()
+      .toLowerCase();
+
+    // ----------------------------------------
+    // C. VALIDATE EMAIL
+    // ----------------------------------------
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!emailRegex.test(email) || email.length > 254) {
+      return interaction.reply({
+        content:
+          "Please enter a valid email address.",
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    // Acknowledge submission
+    await interaction.deferReply({
+      flags: MessageFlags.Ephemeral
+    });
+
+    // ----------------------------------------
+    // D. GENERATE FEEDBACK ID
+    // ----------------------------------------
+
+    const feedbackId = crypto.randomUUID();
+
+    // ----------------------------------------
+    // E. CREATE PUBLIC DISCORD EMBED
+    // ----------------------------------------
+
+    const embed = new EmbedBuilder()
+      .setTitle("New Feedback")
+      .setColor(0x5865F2)
+      .addFields(
+        {
+          name: "Issue Title",
+          value: title
+        },
+        {
+          name: "Description",
+          value: description
+        },
+        {
+          name: "Submitted By",
+          value: `<@${interaction.user.id}>`,
+          inline: true
+        },
+        {
+          name: "Status",
+          value: "Open",
+          inline: true
+        }
+      )
+      .setFooter({
+        text: `Feedback ID: ${feedbackId}`
+      })
+      .setTimestamp();
+
+    // IMPORTANT:
+    // Email is intentionally NOT included
+    // in this public Discord embed.
+
+    // ----------------------------------------
+    // F. VERIFY CHANNEL PERMISSIONS
+    // ----------------------------------------
+
+    const channel = interaction.channel;
+
+    if (
+      !channel.isTextBased() ||
+      typeof channel.send !== "function"
+    ) {
+      return interaction.editReply({
+        content:
+          "This channel does not support feedback posts."
+      });
+    }
+
+    const botMember =
+      await interaction.guild.members.fetchMe();
+
+    const permissions =
+      channel.permissionsFor(botMember);
+
+    if (
+      !permissions?.has(
+        PermissionFlagsBits.ViewChannel
+      ) ||
+      !permissions?.has(
+        PermissionFlagsBits.SendMessages
+      ) ||
+      !permissions?.has(
+        PermissionFlagsBits.EmbedLinks
       )
     ) {
-      return interaction.reply({
+      return interaction.editReply({
         content:
-          "You need Manage Server permission " +
-          "to use this command.",
-        flags: MessageFlags.Ephemeral
-      });
-    }
-
-    if (!configurations[guildId]) {
-      configurations[guildId] = [];
-    }
-
-    const channels = configurations[guildId];
-
-    // ----------------------------------------
-    // /feedback add
-    // ----------------------------------------
-
-    if (action === "add") {
-
-      const channel = interaction.options
-        .getChannel("channel");
-
-      const botMember = await interaction.guild
-        .members.fetchMe();
-
-      const permissions = channel.permissionsFor(botMember);
-
-      const requiredPermissions = [
-        PermissionFlagsBits.ViewChannel,
-        PermissionFlagsBits.SendMessages,
-        PermissionFlagsBits.EmbedLinks
-      ];
-
-      if (
-        !permissions ||
-        !requiredPermissions.every(
-          permission => permissions.has(permission)
-        )
-      ) {
-        return interaction.reply({
-          content:
-            "The bot needs View Channel, " +
-            "Send Messages and Embed Links permissions.",
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
-      if (channels.includes(channel.id)) {
-        return interaction.reply({
-          content: "This channel is already monitored.",
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
-      channels.push(channel.id);
-      saveConfigurations();
-
-      return interaction.reply({
-        content:
-          `Feedback collection enabled for ${channel}.`,
-        flags: MessageFlags.Ephemeral
+          "The bot needs View Channel, " +
+          "Send Messages and Embed Links permissions."
       });
     }
 
     // ----------------------------------------
-    // /feedback remove
+    // G. POST FEEDBACK IN DISCORD
     // ----------------------------------------
 
-    if (action === "remove") {
+    let postedMessage;
 
-      const channel = interaction.options
-        .getChannel("channel");
+    try {
 
-      configurations[guildId] = channels.filter(
-        id => id !== channel.id
+      postedMessage = await channel.send({
+        embeds: [embed],
+
+        // Prevent arbitrary user input
+        // from pinging server members.
+        allowedMentions: {
+          parse: []
+        }
+      });
+
+      console.log(
+        `[DISCORD] Feedback posted: ${feedbackId}`
       );
 
-      saveConfigurations();
+    } catch (error) {
 
-      return interaction.reply({
+      console.error(
+        "Failed to post feedback:",
+        error
+      );
+
+      return interaction.editReply({
         content:
-          `Feedback collection disabled for ${channel}.`,
-        flags: MessageFlags.Ephemeral
+          "Failed to post feedback in this channel."
       });
     }
 
     // ----------------------------------------
-    // /feedback list
+    // H. CREATE WEBHOOK PAYLOAD
     // ----------------------------------------
 
-    if (action === "list") {
+    const payload = {
 
-      const result = channels.length
-        ? channels.map(id => `<#${id}>`).join("\n")
-        : "No channels configured.";
+      platform: "discord",
+      event_type: "feedback.created",
 
-      return interaction.reply({
-        content: `Monitored Channels:\n${result}`,
-        flags: MessageFlags.Ephemeral
+      feedback_id: feedbackId,
+
+      guild_id: interaction.guildId,
+      guild_name: interaction.guild.name,
+
+      channel_id: interaction.channelId,
+      channel_name: channel.name ?? null,
+
+      message_id: postedMessage.id,
+
+      message_url: postedMessage.url,
+
+      author: {
+        id: interaction.user.id,
+        username: interaction.user.username,
+        display_name:
+          interaction.user.globalName ??
+          interaction.user.username
+      },
+
+      feedback: {
+        title: title,
+        description: description,
+        email: email,
+        status: "open"
+      },
+
+      timestamp: new Date().toISOString()
+    };
+
+    // ----------------------------------------
+    // I. FORWARD TO YOUR BACKEND
+    // ----------------------------------------
+
+    try {
+
+      await forwardToWebhook(payload);
+
+      await interaction.editReply({
+        content:
+          "Your feedback was submitted successfully! " +
+          "You may receive email updates about your issue."
+      });
+
+    } catch (error) {
+
+      console.error(
+        "Failed to sync feedback:",
+        error
+      );
+
+      await interaction.editReply({
+        content:
+          "Your feedback was posted in Discord, " +
+          "but syncing it to our system failed. " +
+          "Please contact the server administrator."
       });
     }
 
@@ -595,103 +470,38 @@ client.on(Events.InteractionCreate, async interaction => {
     console.error("Interaction error:", error);
 
     try {
-      if (interaction.deferred || interaction.replied) {
+      if (interaction.deferred) {
+
+        await interaction.editReply({
+          content: "An unexpected error occurred."
+        });
+
+      } else if (interaction.replied) {
+
         await interaction.followUp({
-          content: "Something went wrong.",
+          content: "An unexpected error occurred.",
           flags: MessageFlags.Ephemeral
         });
+
       } else {
+
         await interaction.reply({
-          content: "Something went wrong.",
+          content: "An unexpected error occurred.",
           flags: MessageFlags.Ephemeral
         });
       }
+
     } catch (replyError) {
-      console.error("Failed to send error reply:", replyError);
+      console.error(
+        "Could not send error response:",
+        replyError
+      );
     }
   }
 });
 
 // ============================================
-// 9. MONITOR ORDINARY CHANNEL MESSAGES
-// ============================================
-
-client.on(Events.MessageCreate, async message => {
-
-  // Ignore DMs and bot messages
-  if (!message.guild || message.author.bot) {
-    return;
-  }
-
-  const guildId = message.guild.id;
-  const channelId = message.channel.id;
-
-  if (!isMonitored(guildId, channelId)) {
-    return;
-  }
-
-  const payload = {
-    platform: "discord",
-    event_type: "message.created",
-
-    guild_id: guildId,
-    guild_name: message.guild.name,
-
-    channel_id: channelId,
-    channel_name: message.channel.name,
-
-    message_id: message.id,
-
-    author: {
-      id: message.author.id,
-      username: message.author.username,
-      display_name: message.author.globalName
-    },
-
-    content: message.content,
-
-    attachments: message.attachments.map(file => ({
-      name: file.name,
-      url: file.url,
-      content_type: file.contentType
-    })),
-
-    timestamp: message.createdAt.toISOString()
-  };
-
-  try {
-
-    await forwardToWebhook(payload);
-
-    console.log(
-      `[MESSAGE] Forwarded from ${message.guild.name} / #${message.channel.name}`
-    );
-
-  } catch (error) {
-
-    console.error(
-      `[MESSAGE] Delivery failed: ${message.id}`,
-      error.message
-    );
-  }
-});
-
-// ============================================
-// 10. REMOVE CONFIG WHEN BOT LEAVES SERVER
-// ============================================
-
-client.on(Events.GuildDelete, guild => {
-
-  delete configurations[guild.id];
-  saveConfigurations();
-
-  console.log(
-    `Removed configuration for ${guild.name}`
-  );
-});
-
-// ============================================
-// 11. HANDLE CLIENT ERRORS
+// 8. HANDLE CLIENT ERRORS
 // ============================================
 
 client.on(Events.Error, error => {
@@ -699,10 +509,10 @@ client.on(Events.Error, error => {
 });
 
 // ============================================
-// 12. START BOT
+// 9. START BOT
 // ============================================
 
 client.login(DISCORD_TOKEN).catch(error => {
-  console.error("Failed to log in:", error);
+  console.error("Discord login failed:", error);
   process.exit(1);
 });

@@ -46,12 +46,17 @@ const client = new Client({
 });
 
 // ============================================
-// 3. REGISTER /feedback new COMMAND
+// 3. REGISTER /feedback COMMANDS
 // ============================================
 
 const feedbackCommand = new SlashCommandBuilder()
   .setName("feedback")
   .setDescription("Submit product feedback")
+  .addSubcommand(sub =>
+    sub
+      .setName("setup")
+      .setDescription("Get this server's guild ID for your feedback aggregator dashboard")
+  )
   .addSubcommand(sub =>
     sub
       .setName("new")
@@ -73,7 +78,7 @@ client.once(Events.ClientReady, async readyClient => {
       feedbackCommand.toJSON()
     ]);
 
-    console.log("Slash command registered: /feedback new");
+    console.log("Slash commands registered: /feedback setup, /feedback new");
 
   } catch (error) {
     console.error(
@@ -203,13 +208,12 @@ client.on(Events.InteractionCreate, async interaction => {
   try {
 
     // ----------------------------------------
-    // A. HANDLE /feedback new
+    // A. HANDLE /feedback COMMANDS
     // ----------------------------------------
 
     if (
       interaction.isChatInputCommand() &&
-      interaction.commandName === "feedback" &&
-      interaction.options.getSubcommand() === "new"
+      interaction.commandName === "feedback"
     ) {
 
       if (!interaction.inGuild()) {
@@ -218,6 +222,21 @@ client.on(Events.InteractionCreate, async interaction => {
             "Please use this command in a Discord server.",
           flags: MessageFlags.Ephemeral
         });
+      }
+
+      const subcommand = interaction.options.getSubcommand();
+
+      if (subcommand === "setup") {
+        return interaction.reply({
+          content:
+            `This server's guild ID is:\n\`\`\`\n${interaction.guildId}\n\`\`\`\n` +
+            "Copy this guild ID and enter it in your feedback aggregator dashboard to connect this Discord server.",
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      if (subcommand !== "new") {
+        return;
       }
 
       // Open feedback form
